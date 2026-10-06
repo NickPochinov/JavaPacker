@@ -1,0 +1,4 @@
+CompileFlags:
+  Add:
+    - -std=c++17
+    - -IC:\Git\vcpkg\vcpkg\installed\x64-mingw-static\include
