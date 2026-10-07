@@ -121,7 +121,7 @@ int main(int argc, char* argv[]) {
         std::string s = argv[i];
         args.push_back(argv[i]);
     }
-    std::string os = "-cp";
+    char os = 0;
     if (contains(args, "--help")) {
         std::cout << "-----------------------------" << std::endl;
         std::cout << "Подкоманды javapacker:" << std::endl;
@@ -130,7 +130,6 @@ int main(int argc, char* argv[]) {
         std::cout << "-windows - создаёт файл - обёртку для систем Windows (.exe)." << std::endl;
         std::cout << "-linux - создаёт файл - обёртку для систем Linux (.elf)." << std::endl;
         std::cout << "-mac - создаёт файл - обёртку для систем MacOS (.out)." << std::endl;
-        std::cout << "-cp - создаёт файлы для всех перечисленных систем (.exe, .elf, .out) - (используется по умолчанию)" << std::endl;
         std::cout << "-jdk \"Путь к архиву\" - встраивает среду выполнения (jdk) в файл - обёртку." << std::endl;
         std::cout << "-out \"Путь к файлу (без формата)\" - указывает путь к будующему файлу - обёртке." << std::endl;
         std::cout << "-nojdk - поиск среды выполнения при запуске обёртки - (используется по умолчанию)." << std::endl;
@@ -171,19 +170,15 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    std::vector<jp::RFile> exeFiles = {loadExecutable(0), loadExecutable(1), loadExecutable(2)};
+    jp::RFile file = loadExecutable(0);
 
-    if (contains(args, "-windows")) {
-        exeFiles = {exeFiles[0]};
-        os = "-windows";
-    }
-    else if (contains(args, "-linux")) {
-        exeFiles = {exeFiles[1]};
-        os = "-linux";
+    if (contains(args, "-linux")) {
+        file = loadExecutable(1);
+        os = 1;
     }
     else if (contains(args, "-mac")) {
-        exeFiles = {exeFiles[2]};
-        os = "-mac";
+        file = loadExecutable(2);
+        os = 2;
     }
 
     int fileIndex = getIndex(args, "-file");
@@ -230,8 +225,12 @@ int main(int argc, char* argv[]) {
     std::string jdkVersion = "-1";
 
     if (haveJdk) {
-        std::string newPath = (fs::path("jdk") / jdkVersion).string() + ".tmp";
+        fs::path jdkTmpPath = fs::absolute(fs::path("jdk"));
+        if (!fs::exists(jdkTmpPath)) {
+            fs::create_directory(jdkTmpPath);
+        }
         jdkVersion = getJdkVersion({args[jdkIndex + 1].c_str()});
+        std::string newPath = (jdkTmpPath / jdkVersion).string() + ".tmp";
         if (jdkVersion.empty()) {
             std::cout << "Ошибка: Не удалось загрузить jdk" << std::endl;
             return 1;
@@ -270,57 +269,54 @@ int main(int argc, char* argv[]) {
         files.push_back(jdk);
     }
 
-    for (int i = 0; i < exeFiles.size(); i++) {
-        jp::RFile file = exeFiles[i];
-        std::string outFile = out + fs::path(file.getPath()).extension().string();
-        bool ext = jp::zip::extractResource({""}, file.getPath(), outFile);
-        if (!ext) {
-            std::cout << "Ошибка: Не удалось создать файл \"" + outFile + "\"" << std::endl;
-            return 1;
+    std::string outFile = out + fs::path(file.getPath()).extension().string();
+    bool ext = jp::zip::extractResource({""}, file.getPath(), outFile);
+    if (!ext) {
+        std::cout << "Ошибка: Не удалось создать файл \"" + outFile + "\"" << std::endl;
+        return 1;
+    }
+    if (os == 0 && contains(args, "-icon")) {
+        HANDLE updater = BeginUpdateResourceA(outFile.c_str(), true);
+        if (!updater) {
+            std::cout << "Предупреждение: Не удалось начать добавление иконки" << std::endl;
         }
-        if (i == 0 && contains(args, "-icon")) {
-            HANDLE updater = BeginUpdateResourceA(outFile.c_str(), true);
-            if (!updater) {
-                std::cout << "Предупреждение: Не удалось начать добавление иконки" << std::endl;
+        else {
+            jp::CData data = jp::FileManager::binaryReadA(args[getIndex(args, "-icon") + 1].c_str());
+            if (data.size() < sizeof(ICONDIR) + sizeof(ICONDIRENTRY)) {
+                std::cout << "Предупреждение: Неизвестный ico файл" << std::endl;
+                EndUpdateResourceA(updater, false);
             }
             else {
-                jp::CData data = jp::FileManager::binaryReadA(args[getIndex(args, "-icon") + 1].c_str());
-                if (data.size() < sizeof(ICONDIR) + sizeof(ICONDIRENTRY)) {
+                ICONDIR* dir = reinterpret_cast<ICONDIR*>(data.data());
+                ICONDIRENTRY* dirEntry = reinterpret_cast<ICONDIRENTRY*>(data.data() + sizeof(ICONDIR));
+                if (!dir && !dirEntry) {
                     std::cout << "Предупреждение: Неизвестный ico файл" << std::endl;
                     EndUpdateResourceA(updater, false);
                 }
                 else {
-                    ICONDIR* dir = reinterpret_cast<ICONDIR*>(data.data());
-                    ICONDIRENTRY* dirEntry = reinterpret_cast<ICONDIRENTRY*>(data.data() + sizeof(ICONDIR));
-                    if (!dir && !dirEntry) {
-                        std::cout << "Предупреждение: Неизвестный ico файл" << std::endl;
+                    bool update = UpdateResourceA(updater, MAKEINTRESOURCEA(3), MAKEINTRESOURCEA(101), MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), data.data() + dirEntry->dwImageOffset, dirEntry->dwBytesInRes);
+                    if (!update) {
+                        std::cout << "Предупреждение: Не удалось добавить иконку" << std::endl;
                         EndUpdateResourceA(updater, false);
                     }
                     else {
-                        bool update = UpdateResourceA(updater, MAKEINTRESOURCEA(3), MAKEINTRESOURCEA(101), MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), data.data() + dirEntry->dwImageOffset, dirEntry->dwBytesInRes);
-                        if (!update) {
-                            std::cout << "Предупреждение: Не удалось добавить иконку" << std::endl;
-                            EndUpdateResourceA(updater, false);
-                        }
-                        else {
-                            jp::CData grp(sizeof(GroupHeader) + sizeof(GRPICONDIRENTRY));
-                            GroupHeader gh = {0, 1, 1};
-                            GRPICONDIRENTRY* ge = reinterpret_cast<GRPICONDIRENTRY*>(dirEntry);
-                            ge->nID = 101;
-                            memcpy(grp.data(), &gh, sizeof(GroupHeader));
-                            memcpy(grp.data() + sizeof(GroupHeader), ge, sizeof(GRPICONDIRENTRY));
-                            UpdateResourceA(updater, MAKEINTRESOURCEA(14), MAKEINTRESOURCEA(1), MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), grp.data(), grp.size());
-                            EndUpdateResourceA(updater, false);
-                        }
+                        jp::CData grp(sizeof(GroupHeader) + sizeof(GRPICONDIRENTRY));
+                        GroupHeader gh = {0, 1, 1};
+                        GRPICONDIRENTRY* ge = reinterpret_cast<GRPICONDIRENTRY*>(dirEntry);
+                        ge->nID = 101;
+                        memcpy(grp.data(), &gh, sizeof(GroupHeader));
+                        memcpy(grp.data() + sizeof(GroupHeader), ge, sizeof(GRPICONDIRENTRY));
+                        UpdateResourceA(updater, MAKEINTRESOURCEA(14), MAKEINTRESOURCEA(1), MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), grp.data(), grp.size());
+                        EndUpdateResourceA(updater, false);
                     }
                 }
             }
         }
-        jp::zip::includeSFX(outFile);
-        jp::zip::addDirectories({outFile}, {"javapacker", "javapacker/jar", "javapacker/jdk", "javapacker/jdk/" + jdkVersion});
-        jp::zip::addFiles({outFile}, files);
-        std::cout << "Вывод: Создан файл: " + outFile << std::endl;
     }
+    jp::zip::includeSFX(outFile);
+    jp::zip::addDirectories({outFile}, {"javapacker", "javapacker/jar", "javapacker/jdk", "javapacker/jdk/" + jdkVersion});
+    jp::zip::addFiles({outFile}, files);
+    std::cout << "Вывод: Создан файл: " + outFile << std::endl;
     std::cout << "Результат: Сборка завершена успешно" << std::endl;
     return 0;
 }
